@@ -370,6 +370,92 @@ At 12:39:  window = 11:39 – 12:39
 
 ---
 
+## Processing Approaches: Batch vs Real-Time vs Lambda
+
+### Option 1: Batch Processing Only
+
+```
+Collectors → Raw Store → Batch Job (runs every hour) → Aggregates → API
+```
+
+- Scheduled job runs every hour, reads all new mentions, computes aggregates
+- **Pros:** Simple, easy to reprocess (just rerun the job)
+- **Cons:** Data always stale (up to 1 hour behind)
+
+### Option 2: Real-Time (Stream) Processing Only (Our Design)
+
+```
+Collectors → Event Log → Stream Processor → Aggregates → API
+```
+
+- Mentions processed as they arrive, aggregates updated continuously
+- **Pros:** Fresh data, responsive charts
+- **Cons:** Harder to fix mistakes without event sourcing
+
+### Option 3: Lambda Architecture (Both)
+
+```
+                        COLLECTORS
+                            │
+                            ▼
+                      RAW DATA STORE
+                       │          │
+                       ▼          ▼
+              ┌──────────┐  ┌──────────┐
+              │  BATCH   │  │  SPEED   │
+              │  LAYER   │  │  LAYER   │
+              │(recompute│  │(real-time│
+              │ all data)│  │ process) │
+              └────┬─────┘  └────┬─────┘
+                   │             │
+                   ▼             ▼
+              Batch Views   Real-time Views
+                   │             │
+                   └──────┬──────┘
+                          ▼
+                    SERVING LAYER
+                    (merges both)
+                          │
+                          ▼
+                      Query API
+```
+
+- **Batch layer**: periodically recomputes everything from scratch (slow, but correct)
+- **Speed layer**: processes new events in real-time (fast, might miss edge cases)
+- **Serving layer**: merges both — batch for older data, speed for recent data
+
+### Comparison
+
+| Aspect | Batch Only | Real-Time (ours) | Lambda (both) |
+|--------|-----------|-------------------|---------------|
+| **Freshness** | Stale (1hr+) | Near real-time | Near real-time |
+| **Accuracy** | High | Good | Best |
+| **Reprocessing** | Built-in | Need event sourcing | Built-in |
+| **Complexity** | Simple | Medium | High (two pipelines!) |
+| **Maintenance** | 1 codebase | 1 codebase | 2 codebases |
+| **Cost** | Lower | Medium | Higher |
+
+### Why we skip Lambda
+
+| Lambda gives you | Our event sourcing already gives |
+|------------------|----------------------------------|
+| Batch recomputes for accuracy | Replay event log → recompute |
+| Speed layer for freshness | Stream processing for freshness |
+| Two pipelines running always | **One pipeline** that can replay when needed |
+
+### When Lambda IS the right choice
+- Massive scale (millions of events/sec)
+- Complex offline analytics (ML training on full dataset)
+- Strict correctness guarantees
+- Team has bandwidth for two pipelines
+
+For our scale (1M mentions/day, 50/sec peak), Lambda is **overkill**.
+
+### Interview one-liner
+> "Lambda runs batch and real-time in parallel — powerful but complex with two pipelines. For our scale, I prefer a single event-sourced stream pipeline: real-time for freshness, replay for accuracy. Same benefits, one codebase."
+
+---
+
 ## Pattern 3: CQRS (Command Query Responsibility Segregation)
 
 > **Write path and read path are optimized differently.**
